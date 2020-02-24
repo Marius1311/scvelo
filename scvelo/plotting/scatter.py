@@ -57,9 +57,13 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
     # use c & color and cmap & color_map interchangeably, and plot each group separately if groups is 'all'
     if 'c' in kwargs: color = kwargs.pop('c')
     if 'cmap' in kwargs: color_map = kwargs.pop('cmap')
-    if groups is 'all':
+
+    c = color[0] if not isinstance(color, str) else color
+    if groups is None:
+        if is_categorical(adata, c): groups = [c for c in adata.obs[c].cat.categories]
+    elif isinstance(groups, str) and groups == 'all':
         if color is None:  color = default_color(adata)
-        if is_categorical(adata, color): groups = [[c] for c in adata.obs[color].cat.categories]
+        if is_categorical(adata, c): groups = [[c] for c in adata.obs[c].cat.categories]
 
     # create list of each mkey (won't be needed in the future) and check if all bases are valid.
     color, layer, x, y, components = to_list(color), to_list(layer), to_list(x), to_list(y), to_list(components)
@@ -118,9 +122,10 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
                                  layer=layer[i * (len(layer) > i)], basis=basis, components=components, groups=groups,
                                  xlabel=xlabel, ylabel='expression' if ylabel is None else ylabel, color_map=color_map,
                                  title=y[i * (len(y) > i)] if title is None else title, ax=ax, **scatter_kwargs)
-                if legend_loc is not False and legend_loc is not 'none':
+                if legend_loc is None: legend_loc = 'best'
+                if legend_loc and legend_loc != 'none':
                     multikey = [key.replace('Mu', 'unspliced').replace('Ms', 'spliced') for key in multikey]
-                    ax.legend(multikey, fontsize=legend_fontsize, loc='best' if legend_loc is None else legend_loc)
+                    ax.legend(multikey, fontsize=legend_fontsize, loc=legend_loc)
 
                 savefig_or_show(dpi=dpi, save=save, show=show)
                 if show is False: return ax
@@ -144,7 +149,7 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
             if isinstance(groups, str): groups = [groups]
             if use_raw is None and basis not in adata.var_names:
                 use_raw = layer is None and adata.raw is not None
-            if projection is '3d':
+            if projection == '3d':
                 from mpl_toolkits.mplot3d import Axes3D
             else:
                 projection = None
@@ -166,6 +171,8 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
                     raise ValueError('Both x and y have to specified.')
                 if any([key not in list(adata.layers.keys()) + ['X'] for key in [x, y]]):
                     raise ValueError('Could not find x or y in layers.')
+                if legend_loc is None:
+                    legend_loc = 'none'
 
                 if xlabel is None: xlabel = x
                 if ylabel is None: ylabel = y
@@ -186,14 +193,7 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
             elif is_embedding:
                 X_emb = adata.obsm['X_' + basis][:, get_components(components, basis)]
                 x, y = X_emb[:, 0], X_emb[:, 1]
-                z = X_emb[:, 2] if projection is '3d' and X_emb.shape[1] > 2 else None
-
-                # set legend if categorical color vals in embedding
-                if is_categorical(adata, color):
-                    _set_colors_for_categorical_obs(adata, color, palette)
-                    legend_loc = default_legend_loc(adata, color, legend_loc)
-                    _add_legend(adata, ax, color, legend_loc, X_emb, legend_fontweight, legend_fontsize,
-                                [patheffects.withStroke(linewidth=True, foreground='w')], groups)
+                z = X_emb[:, 2] if projection == '3d' and X_emb.shape[1] > 2 else None
 
             elif isinstance(x, str) and isinstance(y, str):
                 if layer is None:
@@ -237,6 +237,13 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
             if n_convolve is not None:
                 y[np.argsort(x)] = np.convolve(y[np.argsort(x)], np.ones(n_convolve) / n_convolve, mode='same')
 
+            # set legend if categorical color vals in embedding
+            if is_categorical(adata, color):
+                _set_colors_for_categorical_obs(adata, color, palette)
+                legend_loc = default_legend_loc(adata, color, legend_loc)
+                _add_legend(adata, ax, color, legend_loc, np.stack([x, y]).T, legend_fontweight, legend_fontsize,
+                            [patheffects.withStroke(linewidth=True, foreground='w')], groups)
+
             # if color is set to a cell index, plot that cell on top
             if isinstance(color, int):
                 color = np.array(np.arange(len(x)) == color, dtype=bool)
@@ -269,7 +276,8 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
                 if isinstance(kwargs['s'], np.ndarray):
                     kwargs['s'] = np.array(kwargs['s'])[order]
 
-            if "vmid" not in kwargs and "vmin" not in kwargs and layer is not None and 'velocity' in layer:
+            if not np.any([v in kwargs for v in ['vmin', 'vmid', 'vmax']]) \
+                    and np.any([isinstance(v, str) and 'velocity' in v for v in [color, layer]]):
                 kwargs['vmid'] = 0  # set vmid to 0 if color values obtained from velocity expression
 
             # introduce vmid by setting vmin and vmax accordingly
@@ -297,10 +305,10 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
                 raise ValueError('x or y do not share the same dimension.')
 
             if not isinstance(c, str):
-                c = np.ravel(c)
+                c = np.ravel(c) if len(np.ravel(c)) == len(x) else c
                 if len(c) != len(x):
                     c = 'grey'
-                    if color is not default_color(adata):
+                    if not isinstance(color, str) or color != default_color(adata):
                         logg.warn('Invalid color key. Using grey instead.')
 
             smp = ax.scatter(x, y, c=c, alpha=alpha, marker='.', zorder=zorder, **kwargs)
@@ -311,11 +319,11 @@ def scatter(adata=None, x=None, y=None, basis=None, vkey=None, color=None, use_r
             if show_density:
                 plot_density(x, y, show_density, ax=ax)
 
-            if show_linear_fit or show_linear_fit is 0:
-                plot_linfit(x, y, show_linear_fit, legend_loc is not 'none', linecolor, linewidth, fontsize, ax=ax)
+            if show_linear_fit or show_linear_fit == 0:
+                plot_linfit(x, y, show_linear_fit, legend_loc != 'none', linecolor, linewidth, fontsize, ax=ax)
 
             if show_polyfit:
-                plot_polyfit(x, y, show_polyfit, legend_loc is not 'none', linecolor, linewidth, fontsize, ax=ax)
+                plot_polyfit(x, y, show_polyfit, legend_loc != 'none', linecolor, linewidth, fontsize, ax=ax)
 
             if rug:
                 plot_rug(np.ravel(x), color=np.ravel(interpret_colorkey(adata, rug)), ax=ax)
